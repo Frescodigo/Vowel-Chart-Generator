@@ -1,170 +1,100 @@
-const record = document.querySelector(".record")
-const stop = document.querySelector(".stop")
-const soundClips = document.querySelector(".sound-clips")
-const canvas = document.querySelector(".visualizer")
-const mainSection = document.querySelector(".main-controls")
+const canvas = document.querySelector("canvas");
 
-// disable the stop button while not recording
-stop.disabled = true;
-
-// visualizer setup, create audio context and canvas context
-let audioCtx;
-const canvasCtx = canvas.getContext("2d");
-
-// giant ass block for audio recording
 if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 	console.log("mediaDevices.getUserMedia() method is supported");
-
 	const constraints = { audio: true };
-	let chunks = [];
 
-	let onSuccess = function (stream) {
-		const mediaRecorder = new MediaRecorder(stream);
+	const onSuccess = function(stream) {
+		console.log("success!");
 
-		visualize(stream);
 
-		record.onclick = function () {
-			mediaRecorder.start();
+		const audioContext = new AudioContext();
+		const source = audioContext.createMediaStreamSource(stream);
+		const analyser = audioContext.createAnalyser();
+		analyser.fftSize = 2 ** 13 // apparently bigger is better for frequency detail, must be a power of 2
+		const bufferLength = analyser.frequencyBinCount;
+		const dataArray = new Uint8Array(bufferLength);
 
-			console.log(mediaRecorder.state);
-			console.log("Recorder started.");
+		source.connect(analyser);
 
-			record.style.background = "red";
-			record.style.color = "white"
+		const canvasContext = canvas.getContext("2d");
+		draw();
 
-			stop.disabled = false;
-			record.disabled = true;
-		};
+		function draw() {
+			requestAnimationFrame(draw);
 
-		stop.onclick = function () {
-			mediaRecorder.stop();
+			const WIDTH = canvas.width;
+			const HEIGHT = canvas.height;
 
-			console.log(mediaRecorder.state);
-			console.log("Recorder stopped.");
+			// put decibel value from 0->255 assuming 255 is loudest
+			analyser.getByteFrequencyData(dataArray);
+			
+			// smoothe and find local maxima
+			const peaks = findPeaks(dataArray);
 
-			record.style.background = "";
-			record.style.color = "";
-
-			stop.disabled = true;
-			record.disabled = false;
-		};
-
-		mediaRecorder.onstop = function (e) {
-			console.log("last data to read (after stop() called).");
-
-			const clipName = prompt(
-				"enter a name for your sound clip?",
-				"couldnt think of one"
-			);
-
-			const clipContainer = document.createElement("article");
-			const clipLabel = document.createElement("p");
-			const audio = document.createElement("audio");
-			const deleteButton = document.createElement("button");
-
-			clipContainer.classList.add("clip");
-			audio.setAttribute("controls", "");
-			deleteButton.textContent = "Delete";
-			deleteButton.className = "delete"
-
-			if (clipName === null) {
-				clipLabel.textContent = "My unnamed clip";
-			} else {
-				clipLabel.textContent = clipName;
+			console.log("start debug");
+			for (let peak of peaks) {
+				console.log(`peak at [${peak}] : ${dataArray[peak]}`)
 			}
+		}
+	}
 
-			clipContainer.appendChild(audio);
-			clipContainer.appendChild(clipLabel);
-			clipContainer.appendChild(deleteButton);
-			soundClips.appendChild(clipContainer);
-			
-			// audio.controls = true;
-			console.log(chunks);
-			const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
+	const onFailure = function(err) {
+		console.error(err);
+	}
 
-			// analyze blob ??
-			const analyser = audioCtx.newAnalyser();
-			analyser.fftSize = 4096;
+	navigator.mediaDevices.getUserMedia(constraints).then(onSuccess, onFailure);
 
-
-			chunks = [];
-			const audioURL = window.URL.createObjectURL(blob);
-			audio.src = audioURL;
-			console.log(" recorder stopped agian");
-
-			deleteButton.onclick = function (e) {
-				e.target.closest(".clip").remove();
-			};
-			
-
-		};
-
-		mediaRecorder.ondataavailable = function (e) {
-			console.log("chunks and shit");
-			console.log(chunks);
-			chunks.push(e.data);
-			console.log(chunks);
-		};
-	};
-
-	let onError = function (err) {
-		console.log("the following error occured ", err);
-	};
-
-	navigator.mediaDevices.getUserMedia(constraints).then(onSuccess, onError);
 } else {
 	alert("Your browser does not support audio capture.");
 }
 
-function visualize(stream) {
-	if(!audioCtx) {
-		audioCtx = new AudioContext();
+
+// finds local maxima
+// algorithm borrowed from scipy
+function findPeaks(data) {
+	peaks = []
+
+	// smoothe data
+	const smoothed = new Uint8Array(data.length);
+	const WINDOW_SIZE = 8;
+	let window_sum = 0;
+	for (let i = 0; i < WINDOW_SIZE; i++) {
+		window_sum += data[i];
+	}
+	for (let i = 0; i < data.length - WINDOW_SIZE; i++) {
+		smoothed[i] = window_sum / WINDOW_SIZE;
+		window_sum += data[i + WINDOW_SIZE] - data[i];
 	}
 
-	const source = audioCtx.createMediaStreamSource(stream);
+	console.log("smoothed: ", smoothed);
+	console.log("data: ", data);
 
-	const bufferLength = 2048;
-	const analyser = audioCtx.createAnalyser();
-	analyser.fftSize = bufferLength;
-	const dataArray = new Uint8Array(bufferLength);
+	let i = 1; // maxima can't be first sample
+	const iMax = data.length - 1; // maxima can't be last sample
+	// find any local maxima
+	while (i < iMax) {
+		// we know that sample at i is bigger than the sample before
+		if (smoothed[i - 1] < smoothed[i]) {
+			let iAhead = i + 1;
 
-	source.connect(analyser);
-
-	draw();
-
-	function draw() {
-		const WIDTH = canvas.width;
-		const HEIGHT = canvas.height;
-
-		requestAnimationFrame(draw);
-
-		analyser.getByteTimeDomainData(dataArray);
-
-		canvasCtx.fillStyle = "rgb(200, 200, 200)";
-		canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
-
-		canvasCtx.lineWidth = 2;
-		canvasCtx.strokeStyle = "rgb(0, 0, 0)"
-
-		canvasCtx.beginPath();
-
-		let sliceWidth = WIDTH / bufferLength;
-		let x = 0;
-
-		for (let i = 0; i < bufferLength; i++) {
-			let v = dataArray[i] / 128.0;
-			let y = (v * HEIGHT) / 2;
-
-			if (i === 0) {
-				canvasCtx.moveTo(x, y);
-			} else {
-				canvasCtx.lineTo(x, y);
+			// increment lookahead while it's the same as the sample at i
+			while (iAhead < iMax && smoothed[iAhead] == smoothed[i]) {
+				iAhead++;
 			}
-			x += sliceWidth;
+
+			// if the next unequal sample is less than sample at i, it's a peak
+			if (smoothed[iAhead] < smoothed[i]) {
+				const peak = Math.floor((i + iAhead - 1) / 2);
+				peaks.push(peak);
+				i = iAhead;
+			}
 		}
-
-
-		canvasCtx.lineTo(WIDTH, HEIGHT / 2);
-		canvasCtx.stroke();
+		i++;
 	}
+
+	// trim the fat late
+
+	return peaks;
 }
+
