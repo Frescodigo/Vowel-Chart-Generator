@@ -1,4 +1,18 @@
-const canvas = document.querySelector("canvas");
+const canvas = document.querySelector(".visualizer");
+
+const FPS = 30;
+
+let isSmoothed = true;
+let pause = false;
+document.addEventListener("keydown", (event) => {
+	const keyName = event.key;
+
+	if (keyName === " ") {
+		isSmoothed = !isSmoothed;
+	} else if (keyName === "p") {
+		pause = !pause
+	}
+});
 
 if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 	console.log("mediaDevices.getUserMedia() method is supported");
@@ -11,31 +25,72 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 		const audioContext = new AudioContext();
 		const source = audioContext.createMediaStreamSource(stream);
 		const analyser = audioContext.createAnalyser();
-		analyser.fftSize = 2 ** 13 // apparently bigger is better for frequency detail, must be a power of 2
-		const bufferLength = analyser.frequencyBinCount;
-		const dataArray = new Uint8Array(bufferLength);
+		analyser.fftSize = 8192 // apparently bigger is better for frequency detail, must be a power of 2
+		analyser.smoothingTimeConstant = 0; // range of [0, 1], is used for temporal smoothing, default is 0.8
+		analyser.maxDecibels = -10;
+		const binCount = analyser.frequencyBinCount;
+		let freqDomain = new Uint8Array(binCount);
 
 		source.connect(analyser);
 
-		const canvasContext = canvas.getContext("2d");
+		const drawContext = canvas.getContext("2d");
+
 		draw();
 
 		function draw() {
-			requestAnimationFrame(draw);
 
 			const WIDTH = canvas.width;
 			const HEIGHT = canvas.height;
 
-			// put decibel value from 0->255 assuming 255 is loudest
-			analyser.getByteFrequencyData(dataArray);
-			
-			// smoothe and find local maxima
-			const peaks = findPeaks(dataArray);
-
-			console.log("start debug");
-			for (let peak of peaks) {
-				console.log(`peak at [${peak}] : ${dataArray[peak]}`)
+			if (pause) {
+				requestAnimationFrame(draw);
+				return;
 			}
+
+			drawContext.clearRect(0, 0, WIDTH, HEIGHT);
+
+			// put decibel value from 0->255 assuming 255 is loudest
+			analyser.getByteFrequencyData(freqDomain);
+			freqDomain = freqDomain.slice(0, 4096)
+
+			const barWidth = WIDTH / binCount;
+			for (let i = 0; i < binCount; i++) {
+				const value = freqDomain[i];
+				const percent = value / 255;
+				const barHeight = percent * HEIGHT;
+				// const offset = HEIGHT - barHeight - 1;
+				const offset = 0;
+				const hue = i / binCount * 360;
+
+				drawContext.fillStyle = 'hsl(' + hue + ', 100%, 50%)';
+				drawContext.fillRect(i * barWidth, offset, barWidth, barHeight);
+			}
+
+			// smooth data;
+			console.log(isSmoothed);
+			if (isSmoothed) {
+				freqDomain = smooth(freqDomain);
+			}
+
+			// peaks
+
+			const peaks = findPeaks(freqDomain);
+			
+			for (let i = 0; i < peaks.length; i++) {
+				
+				// bullshit for drawing a circle
+				const freq = peaks[i];
+				const x = freq * barWidth;
+				// const y = HEIGHT - (freqDomain[freq] * HEIGHT / 255);
+				const y = freqDomain[freq] * HEIGHT / 255;
+				const r = 3;
+
+				drawContext.beginPath();
+				drawContext.fillStyle = "blue";
+				drawContext.arc(x, y, r, 0, 2 * Math.PI, false);
+				drawContext.fill();
+			}
+			setTimeout(draw, 1000 / FPS);
 		}
 	}
 
@@ -49,42 +104,42 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 	alert("Your browser does not support audio capture.");
 }
 
+function smooth(data) {
+	const smoothed = new Uint8Array(data.length);
+	const WINDOW_SIZE = 128;
+	let windowSum = 0;
+	for (let i = 0; i < WINDOW_SIZE; i++) {
+		windowSum += data[i];
+	}
+	for (let i = 0; i < data.length - WINDOW_SIZE; i++) {
+		smoothed[i] = windowSum / WINDOW_SIZE;
+		windowSum += data[i + WINDOW_SIZE] - data[i];
+	}
+
+	return smoothed;
+}
 
 // finds local maxima
 // algorithm borrowed from scipy
 function findPeaks(data) {
-	peaks = []
+	const peaks = []
 
-	// smoothe data
-	const smoothed = new Uint8Array(data.length);
-	const WINDOW_SIZE = 8;
-	let window_sum = 0;
-	for (let i = 0; i < WINDOW_SIZE; i++) {
-		window_sum += data[i];
-	}
-	for (let i = 0; i < data.length - WINDOW_SIZE; i++) {
-		smoothed[i] = window_sum / WINDOW_SIZE;
-		window_sum += data[i + WINDOW_SIZE] - data[i];
-	}
-
-	console.log("smoothed: ", smoothed);
-	console.log("data: ", data);
-
-	let i = 1; // maxima can't be first sample
-	const iMax = data.length - 1; // maxima can't be last sample
+	let i = 200; // maxima can't be first sample, also skip the first 200 hZ
+	// const iMax = data.length - 1; // maxima can't be last sample
+	const iMax = 2500;
 	// find any local maxima
 	while (i < iMax) {
 		// we know that sample at i is bigger than the sample before
-		if (smoothed[i - 1] < smoothed[i]) {
+		if (data[i - 1] < data[i]) {
 			let iAhead = i + 1;
 
 			// increment lookahead while it's the same as the sample at i
-			while (iAhead < iMax && smoothed[iAhead] == smoothed[i]) {
+			while (iAhead < iMax && data[iAhead] === data[i]) {
 				iAhead++;
 			}
 
 			// if the next unequal sample is less than sample at i, it's a peak
-			if (smoothed[iAhead] < smoothed[i]) {
+			if (data[iAhead] < data[i]) {
 				const peak = Math.floor((i + iAhead - 1) / 2);
 				peaks.push(peak);
 				i = iAhead;
@@ -93,8 +148,50 @@ function findPeaks(data) {
 		i++;
 	}
 
-	// trim the fat late
-
 	return peaks;
+
+	/*
+	const minDistance = 50;
+
+	const priority = new Uint8Array(peaks.length);
+	for (let i = 0; i < peaks.length; i++) {
+		priority[i] = peaks[i];
+	}
+	const priorityToPosition = priority.sort();
+
+	const toss = new Uint8Array(peaks.length);
+	// priority is the heights at the peak, we want the tallest peaks
+	for (let i = peaks.length - 1; i >= 0; i--) {
+		// get the position of the peak
+		const j = priorityToPosition[i];
+		
+		// don't need to evalue peaks that we already eliminated
+		if (toss[j] === 1) {
+			continue;
+		}
+
+		// toss out all peaks to the left that are too close
+		for (let k = j - 1; k >= 0 && peaks[j] - peaks[k] < minDistance; k--) {
+			toss[k] = 1;
+		}
+
+		// toss out all peaks to the right that are too close
+		for (let k = j + 1; k < peaks.length && peaks[k] - peaks[j] < minDistance; k++) {
+			toss[k] = 1;
+		}
+	}
+
+	const keep = [];
+	for (let i = 0; i < peaks.length; i++) {
+		if (!toss[i]) {
+			keep.push(peaks[i]);
+		}
+	}
+
+	keep.map((indexOfPeak) => [data[indexOfPeak]]).sort((a, b) => (a[0] - b[0]))
+
+	return keep;
+	*/
 }
+
 
