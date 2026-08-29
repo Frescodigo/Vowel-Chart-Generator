@@ -27,7 +27,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 		const analyser = audioContext.createAnalyser();
 		analyser.fftSize = 8192 // apparently bigger is better for frequency detail, must be a power of 2
 		analyser.smoothingTimeConstant = 0; // range of [0, 1], is used for temporal smoothing, default is 0.8
-		analyser.maxDecibels = -10;
+		analyser.maxDecibels = -5;
 		const binCount = analyser.frequencyBinCount;
 		let freqDomain = new Uint8Array(binCount);
 
@@ -53,18 +53,6 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 			analyser.getByteFrequencyData(freqDomain);
 			freqDomain = freqDomain.slice(0, 4096)
 
-			const barWidth = WIDTH / binCount;
-			for (let i = 0; i < binCount; i++) {
-				const value = freqDomain[i];
-				const percent = value / 255;
-				const barHeight = percent * HEIGHT;
-				// const offset = HEIGHT - barHeight - 1;
-				const offset = 0;
-				const hue = i / binCount * 360;
-
-				drawContext.fillStyle = 'hsl(' + hue + ', 100%, 50%)';
-				drawContext.fillRect(i * barWidth, offset, barWidth, barHeight);
-			}
 
 			// smooth data;
 			console.log(isSmoothed);
@@ -73,16 +61,28 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 			}
 
 			// peaks
-
 			const peaks = findPeaks(freqDomain);
-			
+
+			const barWidth = WIDTH / binCount;
+			for (let i = 0; i < binCount; i++) {
+				const value = freqDomain[i];
+				const percent = value / 255;
+				const barHeight = percent * HEIGHT;
+				const offset = HEIGHT - barHeight - 1;
+				// const offset = 0;
+				const hue = i / binCount * 360;
+
+				drawContext.fillStyle = 'hsl(' + hue + ', 100%, 50%)';
+				drawContext.fillRect(i * barWidth, offset, barWidth, barHeight);
+			}
+
 			for (let i = 0; i < peaks.length; i++) {
-				
+
 				// bullshit for drawing a circle
 				const freq = peaks[i];
 				const x = freq * barWidth;
-				// const y = HEIGHT - (freqDomain[freq] * HEIGHT / 255);
-				const y = freqDomain[freq] * HEIGHT / 255;
+				const y = HEIGHT - (freqDomain[freq] * HEIGHT / 255);
+				// const y = freqDomain[freq] * HEIGHT / 255;
 				const r = 3;
 
 				drawContext.beginPath();
@@ -106,7 +106,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
 
 function smooth(data) {
 	const smoothed = new Uint8Array(data.length);
-	const WINDOW_SIZE = 128;
+	const WINDOW_SIZE = 16;
 	let windowSum = 0;
 	for (let i = 0; i < WINDOW_SIZE; i++) {
 		windowSum += data[i];
@@ -124,13 +124,17 @@ function smooth(data) {
 function findPeaks(data) {
 	const peaks = []
 
+	const minHeight = 20;
+
 	let i = 200; // maxima can't be first sample, also skip the first 200 hZ
 	// const iMax = data.length - 1; // maxima can't be last sample
 	const iMax = 2500;
 	// find any local maxima
-	while (i < iMax) {
+	for (let i = 200; i < 2500; i++) {
+		if (data[i] < minHeight) continue;
 		// we know that sample at i is bigger than the sample before
 		if (data[i - 1] < data[i]) {
+
 			let iAhead = i + 1;
 
 			// increment lookahead while it's the same as the sample at i
@@ -145,26 +149,24 @@ function findPeaks(data) {
 				i = iAhead;
 			}
 		}
-		i++;
 	}
 
-	return peaks;
-
-	/*
 	const minDistance = 50;
 
-	const priority = new Uint8Array(peaks.length);
+	const priority = [];
 	for (let i = 0; i < peaks.length; i++) {
-		priority[i] = peaks[i];
+		priority[i] = data[peaks[i]];
 	}
-	const priorityToPosition = priority.sort();
+
+	let priorityToPosition = argSort(priority);
 
 	const toss = new Uint8Array(peaks.length);
 	// priority is the heights at the peak, we want the tallest peaks
 	for (let i = peaks.length - 1; i >= 0; i--) {
 		// get the position of the peak
 		const j = priorityToPosition[i];
-		
+		console.log(j);
+
 		// don't need to evalue peaks that we already eliminated
 		if (toss[j] === 1) {
 			continue;
@@ -188,10 +190,12 @@ function findPeaks(data) {
 		}
 	}
 
-	keep.map((indexOfPeak) => [data[indexOfPeak]]).sort((a, b) => (a[0] - b[0]))
-
 	return keep;
-	*/
+}
+
+// this is replicates the behavior of np.argsort()
+function argSort(array) {
+	return array.map((v, i) => [v,i]).sort().map(([_,i]) => i);
 }
 
 
